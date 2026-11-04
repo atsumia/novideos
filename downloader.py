@@ -188,21 +188,32 @@ async def fetch_via_ytdlp(url: str) -> Optional[Dict[str, Any]]:
 
 
 async def get_tiktok_info(raw_url: str) -> Optional[Dict[str, Any]]:
-    """Resolves and extracts TikTok video/photo info."""
+    """Resolves and extracts TikTok video/photo info with direct TikWM fast-path."""
+    # 1. Быстрый путь: TikWM нативно понимает сокращенные ссылки (vm.tiktok.com, vt.tiktok.com)
+    # Это экономит 1.5-2.0 секунды на лишних HTTP-редиректах
+    info = await fetch_via_tikwm(raw_url)
+    if info:
+        info['canonical_url'] = raw_url
+        info['original_url'] = raw_url
+        return info
+
+    # 2. Если прямой запрос не удался, резолвим канонический URL и пробуем снова
     canonical_url = await resolve_canonical_url(raw_url)
+    if canonical_url != raw_url:
+        info = await fetch_via_tikwm(canonical_url)
+        if info:
+            info['canonical_url'] = canonical_url
+            info['original_url'] = raw_url
+            return info
 
-    info = await fetch_via_tikwm(canonical_url)
-    if not info and canonical_url != raw_url:
-        info = await fetch_via_tikwm(raw_url)
-
-    if not info:
-        info = await fetch_via_ytdlp(canonical_url)
-
+    # 3. Фолбэк через yt-dlp
+    info = await fetch_via_ytdlp(canonical_url if canonical_url != raw_url else raw_url)
     if info:
         info['canonical_url'] = canonical_url
         info['original_url'] = raw_url
+        return info
 
-    return info
+    return None
 
 
 async def _download_file(url: str, dest_path: str, timeout_sec: int = 20) -> bool:

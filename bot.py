@@ -135,7 +135,8 @@ async def inline_search_handler(inline_query: InlineQuery):
         return
 
     target_url = found_urls[0]
-    q_norm = target_url.lower()
+    # Очищаем трекинг-параметры (?_t=..., ?_r=...) для точных попаданий в кэш
+    q_norm = target_url.split('?')[0].lower().rstrip('/')
     now = time.time()
 
     # 3. Кэш запросов в оперативной памяти
@@ -144,7 +145,7 @@ async def inline_search_handler(inline_query: InlineQuery):
         if now - cached_time < _INLINE_CACHE_TTL:
             elapsed = time.time() - t0
             print(f"⚡️ [INLINE CACHE HIT] {target_url} in {elapsed:.3f}s")
-            await inline_query.answer(cached_results, cache_time=15, is_personal=True)
+            await inline_query.answer(cached_results, cache_time=300, is_personal=False)
             return
 
     results = []
@@ -189,9 +190,6 @@ async def inline_search_handler(inline_query: InlineQuery):
 
                 _ACTIVE_VIDEO_INFO[video_id] = info
 
-                # Запускаем сборку / скачивание видео в фоне заранее, чтобы к клику пользователя файл уже был готов
-                asyncio.create_task(downloader.ensure_video_file(info))
-
                 # Сохраняем в базу метаданные
                 database.save_cached_video(
                     tiktok_id=video_id,
@@ -203,8 +201,13 @@ async def inline_search_handler(inline_query: InlineQuery):
                     cover_url=cover_url
                 )
 
-                # Всегда отдаем видеопоток через наш эндпоинт (гарантия MP4, даже для слайдшоу, без текста и кнопок)
-                video_stream_url = f"{BASE_URL}/api/video/{video_id}.mp4"
+                # Для обычного видео отдаем прямой CDN URL без нагрузки на наш сервер
+                # Для слайдшоу отдаем локальный эндпоинт стриминга с ffmpeg-рендерингом
+                is_slideshow = info.get('is_slideshow', False)
+                if is_slideshow or not info.get('download_url'):
+                    video_stream_url = f"{BASE_URL}/api/video/{video_id}.mp4"
+                else:
+                    video_stream_url = info['download_url']
 
                 results.append(
                     InlineQueryResultVideo(
@@ -219,7 +222,7 @@ async def inline_search_handler(inline_query: InlineQuery):
                     )
                 )
                 elapsed = time.time() - t0
-                print(f"✅ [INLINE LIVE STREAM] Video endpoint prepared for {target_url} in {elapsed:.2f}s")
+                print(f"✅ [INLINE STREAM] Result ready for {target_url} in {elapsed:.2f}s (slideshow={is_slideshow})")
 
             else:
                 results.append(
@@ -240,7 +243,7 @@ async def inline_search_handler(inline_query: InlineQuery):
             _INLINE_QUERY_CACHE.pop(oldest, None)
         _INLINE_QUERY_CACHE[q_norm] = (now, results)
 
-        await inline_query.answer(results, cache_time=10, is_personal=True)
+        await inline_query.answer(results, cache_time=300, is_personal=False)
 
     except Exception as e:
         print(f"❌ [INLINE HANDLER ERROR]: {e}")
