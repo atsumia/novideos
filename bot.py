@@ -2,7 +2,7 @@ import os
 import sys
 import time
 import asyncio
-from typing import Dict, Tuple, List, Any
+from typing import Dict, Tuple, List, Any, Optional
 
 from aiohttp import web
 from dotenv import load_dotenv
@@ -24,7 +24,6 @@ from aiogram.types import (
 )
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 import database
 import downloader
@@ -38,9 +37,6 @@ if not BOT_TOKEN:
 
 PORT = int(os.getenv("PORT", 8080))
 BASE_URL = os.getenv("BASE_URL", "https://novideos-production.up.railway.app").rstrip('/')
-WEBHOOK_PATH = "/webhook"
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "novideos_secret_token_1337")
-WEBHOOK_URL = f"{BASE_URL}{WEBHOOK_PATH}"
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
@@ -58,16 +54,18 @@ _ACTIVE_VIDEO_INFO: Dict[str, Dict[str, Any]] = {}
 async def handle_start(message: types.Message):
     user = message.from_user
     database.register_user(user.id, user.username, user.first_name)
-
+    
     bot_info = await bot.get_me()
     bot_username = bot_info.username or "novidsbot"
 
     text = (
         f"🎬 <b>Привет, {user.first_name or 'друг'}!</b>\n\n"
-        f"Я бот <b>NoVideos</b> — скачиваю видео и слайдшоу из TikTok без водяных знаков.\n\n"
+        f"Я бот <b>NoVideos</b> — скачиваю видео и слайдшоу из TikTok без водяного знака.\n\n"
         f"🚀 <b>Как мной пользоваться:</b>\n"
         f"1️⃣ <b>В этом чате:</b> просто отправь ссылку на TikTok.\n"
-        f"2️⃣ <b>В любом чате (инлайн):</b> напиши <code>@{bot_username} ссылка</code> и нажми на видео в списке!"
+        f"2️⃣ <b>В любом чате или группе (инлайн):</b> напиши в поле ввода:\n"
+        f"<code>@{bot_username} ссылка_на_видео</code>\n"
+        f"и выбери видео из списка — видео сразу отправится в чат!"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="🔎 Попробовать инлайн в чате", switch_inline_query="")
@@ -81,7 +79,7 @@ async def handle_stats(message: types.Message):
     text = (
         "📊 <b>Статистика NoVideos:</b>\n\n"
         f"👥 Пользователей: <b>{stats['total_users']}</b>\n"
-        f"💾 Видео в кэше: <b>{stats['total_cached']}</b>\n"
+        f"💾 Видео в кэше Telegram: <b>{stats['total_cached']}</b>\n"
         f"📥 Всего скачиваний: <b>{stats['total_downloads']}</b>"
     )
     await message.answer(text)
@@ -91,11 +89,11 @@ async def handle_stats(message: types.Message):
 async def inline_search_handler(inline_query: InlineQuery):
     t0 = time.time()
     query = inline_query.query.strip()
-
+    
     bot_info = await bot.get_me()
     bot_username = bot_info.username or "novidsbot"
 
-    # 1. Если поле ввода пустое — подсказка
+    # 1. Если поле ввода пустое
     if not query:
         help_article = InlineQueryResultArticle(
             id="help_prompt",
@@ -117,7 +115,7 @@ async def inline_search_handler(inline_query: InlineQuery):
         await inline_query.answer([help_article], cache_time=5, is_personal=True)
         return
 
-    # 2. Проверяем наличие ссылки TikTok
+    # 2. Проверяем, есть ли ссылка на TikTok в тексте
     found_urls = downloader.find_tiktok_urls(query)
     if not found_urls:
         no_url_article = InlineQueryResultArticle(
@@ -160,7 +158,7 @@ async def inline_search_handler(inline_query: InlineQuery):
                 cached_record = database.get_cached_video(extracted_id)
 
         if cached_record and cached_record.get('file_id'):
-            # Мгновенная отдача через Telegram CDN (0ms, БЕЗ ТЕКСТА И КНОПОК)
+            # Мгновенная отдача через Telegram CDN (чистый видеофайл без текста и кнопок)
             file_id = cached_record['file_id']
             title = cached_record.get('title') or "TikTok видео"
             author = cached_record.get('author') or "TikTok"
@@ -191,9 +189,10 @@ async def inline_search_handler(inline_query: InlineQuery):
 
                 _ACTIVE_VIDEO_INFO[video_id] = info
 
-                # Фоновая подготовка видеофайла
+                # Запускаем сборку / скачивание видео в фоне заранее, чтобы к клику пользователя файл уже был готов
                 asyncio.create_task(downloader.ensure_video_file(info))
 
+                # Сохраняем в базу метаданные
                 database.save_cached_video(
                     tiktok_id=video_id,
                     canonical_url=canon_url,
@@ -204,7 +203,7 @@ async def inline_search_handler(inline_query: InlineQuery):
                     cover_url=cover_url
                 )
 
-                # Ссылка на MP4 стрим нашего сервера (БЕЗ ТЕКСТА И КНОПОК)
+                # Всегда отдаем видеопоток через наш эндпоинт (гарантия MP4, даже для слайдшоу, без текста и кнопок)
                 video_stream_url = f"{BASE_URL}/api/video/{video_id}.mp4"
 
                 results.append(
@@ -280,7 +279,7 @@ async def handle_direct_message(message: types.Message):
     status_msg = await message.answer("⏳ <i>Подготавливаю видео...</i>")
 
     try:
-        # 1. Проверяем кэш базы данных
+        # Проверяем кэш базы данных
         cached = database.get_cached_video(target_url)
         if not cached:
             vid = downloader.extract_video_id_from_url(target_url)
@@ -288,13 +287,15 @@ async def handle_direct_message(message: types.Message):
                 cached = database.get_cached_video(vid)
 
         if cached and cached.get('file_id'):
-            # Отправляем чистое видео без текста и кнопок
-            await message.answer_video(video=cached['file_id'])
+            # Чистая отправка видео без текста и кнопок
+            await message.answer_video(
+                video=cached['file_id']
+            )
             database.increment_downloads(user.id, "pm_download", cached['tiktok_id'])
             await status_msg.delete()
             return
 
-        # 2. Парсим инфо
+        # Парсим инфо
         await status_msg.edit_text("⏳ <i>Обрабатываю видео...</i>")
         info = await downloader.get_tiktok_info(target_url)
         if not info:
@@ -320,7 +321,7 @@ async def handle_direct_message(message: types.Message):
 
         await status_msg.edit_text("🚀 <i>Отправляю видео...</i>")
 
-        # Отправляем чистое видео без текста и кнопок
+        # Чистая отправка видео без текста и кнопок
         sent_msg = await message.answer_video(
             video=FSInputFile(video_file),
             duration=duration if duration > 0 else None
@@ -341,7 +342,7 @@ async def handle_direct_message(message: types.Message):
 
     except Exception as e:
         print(f"❌ [PM HANDLER ERROR]: {e}")
-        await status_msg.edit_text(f"⚠️ Произошла ошибка: {e}")
+        await status_msg.edit_text(f"⚠️ Произошла ошибка при обработке: {e}")
 
 
 # ---------------- WEB SERVER & VIDEO STREAMING ENDPOINT ----------------
@@ -395,9 +396,25 @@ async def handle_root(request):
     return web.json_response({
         "status": "online",
         "bot": "@novidsbot",
-        "mode": "webhook",
-        "description": "TikTok Video Downloader Bot"
+        "description": "TikTok Video Downloader Bot with Inline Mode"
     })
+
+
+def create_web_app():
+    app = web.Application()
+    app.router.add_get("/", handle_root)
+    app.router.add_get("/health", handle_health)
+    app.router.add_route("*", "/api/video/{video_id}", handle_api_video)
+    return app
+
+
+async def start_web_server():
+    app = create_web_app()
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    print(f"🌐 [WEB SERVER] Listening on port {PORT}")
 
 
 async def periodic_temp_cleanup():
@@ -411,13 +428,14 @@ async def periodic_temp_cleanup():
                 for f in os.listdir(temp_dir):
                     p = os.path.join(temp_dir, f)
                     if os.path.isfile(p):
+                        # старше 20 минут (1200 сек)
                         if now - os.path.getmtime(p) > 1200:
                             downloader.cleanup_file(p)
         except Exception as e:
             print(f"⚠️ [TEMP CLEANUP ERROR]: {e}")
 
 
-async def on_startup(bot: Bot):
+async def main():
     database.init_db()
 
     commands = [
@@ -429,40 +447,22 @@ async def on_startup(bot: Bot):
     bot_info = await bot.get_me()
     print(f"🤖 [BOT STARTED] @{bot_info.username} ({bot_info.first_name})")
 
+    await start_web_server()
     asyncio.create_task(periodic_temp_cleanup())
 
-    # Устанавливаем Webhook для Telegram
-    await bot.set_webhook(
-        WEBHOOK_URL,
-        secret_token=WEBHOOK_SECRET,
-        drop_pending_updates=True,
+    try:
+        await bot.delete_webhook(drop_pending_updates=False)
+    except Exception:
+        pass
+
+    await dp.start_polling(
+        bot,
         allowed_updates=["message", "inline_query", "chosen_inline_result"]
     )
-    print(f"🚀 [WEBHOOK CONFIGURED] {WEBHOOK_URL}")
-
-
-def main():
-    app = web.Application()
-    app.router.add_get("/", handle_root)
-    app.router.add_get("/health", handle_health)
-    app.router.add_route("*", "/api/video/{video_id}", handle_api_video)
-
-    dp.startup.register(on_startup)
-
-    webhook_requests_handler = SimpleRequestHandler(
-        dispatcher=dp,
-        bot=bot,
-        secret_token=WEBHOOK_SECRET,
-    )
-    webhook_requests_handler.register(app, path=WEBHOOK_PATH)
-    setup_application(app, dp, bot=bot)
-
-    print(f"🌐 [WEB SERVER STARTING] on port {PORT}")
-    web.run_app(app, host="0.0.0.0", port=PORT)
 
 
 if __name__ == "__main__":
     try:
-        main()
+        asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         print("🛑 Бот остановлен.")
