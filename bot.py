@@ -415,6 +415,9 @@ async def handle_api_video(request):
             if row and row.get('canonical_url'):
                 info = await downloader.get_tiktok_info(row['canonical_url'])
 
+        if not info and video_id.isdigit():
+            info = await downloader.get_tiktok_info(f"https://www.tiktok.com/@a/video/{video_id}")
+
         if info:
             await downloader.ensure_video_file(info)
 
