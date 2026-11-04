@@ -28,7 +28,7 @@
 
 3. **Создайте `.env`:**
    ```env
-   BOT_TOKEN=9289734668:AAH-OyIuQT-sYT5l1J4ejDnViDhQ1tgtZ9g
+   BOT_TOKEN=your_telegram_bot_token_here
    PORT=8080
    PYTHONUNBUFFERED=1
    ```

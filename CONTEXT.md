@@ -5,7 +5,7 @@
 - **Repository:** `https://github.com/atsumia/novideos.git`
 - **Hosting Platform:** Railway (CLI deployed, Docker container, service `novideos` in project `pleasant-compassion`)
 - **Public URL:** `https://novideos-production.up.railway.app`
-- **Telegram Bot API Token:** `9289734668:AAH-OyIuQT-sYT5l1J4ejDnViDhQ1tgtZ9g`
+- **Telegram Bot API Token:** Configured via Railway environment variables and local `.env` (Never commit tokens)
 - **Core Stack:** Python 3.11, `aiogram` 3.x, `aiohttp`, `yt-dlp`, SQLite (`data/database.db`), `python-dotenv`, `ffmpeg`.
 
 ## 2. Inline Mode & Performance Architecture
