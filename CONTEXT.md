@@ -8,14 +8,16 @@
 - **Telegram Bot API Token:** `9289734668:AAH-OyIuQT-sYT5l1J4ejDnViDhQ1tgtZ9g`
 - **Core Stack:** Python 3.11, `aiogram` 3.x, `aiohttp`, `yt-dlp`, SQLite (`data/database.db`), `python-dotenv`, `ffmpeg`.
 
-## 2. Inline Mode & Video Delivery Architecture (Fix for TikTok Photo Posts / MP3 Issue)
-- **Root Cause of MP3 Audio Sending:**
-  - TikTok has two distinct types of posts: regular videos (`/video/`) and photo slideshows (`/photo/`).
-  - For photo slideshows, TikTok does not have a native MP4 file; TikWM returns `play` containing the background music track with `mime_type=audio_mpeg`.
-  - When passing that URL directly to `InlineQueryResultVideo`, Telegram inspected the content headers and downgraded the message to an MP3 audio file.
-- **Applied Fix & Unified Video Streaming:**
-  1. **Slideshow Detection & FFmpeg Assembly:** `downloader.py` detects photo mode (`/photo/`, `images` list, or `mime_type=audio_mpeg`). It downloads the slide images and music, then runs an ultrafast `ffmpeg` concat demuxer rendering a 1080x1920 vertical MP4 video with the original audio in ~0.8–2s.
-  2. **Dedicated Video Stream Endpoint (`/api/video/{video_id}.mp4`):** Built into `aiohttp` web server. All inline video results point to this verified endpoint with `Content-Type: video/mp4` and `Accept-Ranges: bytes`.
-  3. **Background Pre-rendering:** As soon as an inline query arrives, `asyncio.create_task(downloader.ensure_video_file(info))` prepares the video so that when the user taps the inline result card, the MP4 file is already cached in `temp/` and streamed to Telegram immediately.
-  4. **Instant Telegram CDN Serving (`InlineQueryResultCachedVideo`):** Once a video is sent in PM or cached, the `file_id` is reused for instant 0ms delivery without any server load.
-  5. **Automated Temp Cleaner:** Periodic coroutine cleans up video files in `temp/` older than 20 minutes to keep Railway disk usage strictly bounded.
+## 2. Inline Mode & Performance Architecture
+- **Root Cause of High Latency / Search Drops:**
+  1. **Token Conflict (`TelegramConflictError`):** An external process (bot name: `ВОТ ТАK.ВОТ — rot563...`) is polling `getUpdates` with the same token. This constantly terminates Railway's polling loop, putting it into 5s backoff sleeps. Incoming inline queries timeout on the Telegram client side (~2.5s limit).
+  2. **Redundant HTTP Redirects:** `downloader.get_tiktok_info` previously called `resolve_canonical_url` before TikWM, wasting 1.5–2s.
+  3. **Heavy Background Downloads on Keystrokes:** Previously spawned ffmpeg/video downloads for every typed character in inline search.
+- **Applied Optimizations:**
+  1. **Fast-path TikWM Extraction:** Calls TikWM directly on raw URLs (`vm.tiktok.com`, `vt.tiktok.com`) without redirect hops. TikWM resolves shortened links in ~0.8s.
+  2. **Direct CDN Streaming for Normal Videos:** Regular videos use TikWM's direct watermark-free CDN MP4 (`download_url`), resulting in 0 CPU/bandwidth load on Railway and instant Telegram client delivery.
+  3. **On-Demand Slideshow Assembly:** Photo slideshows are converted to vertical 1080x1920 MP4 via `ffmpeg` only on demand when requested through `/api/video/{video_id}.mp4`.
+  4. **Telegram Edge Caching:** `answer_inline_query` sets `cache_time=300, is_personal=False`, allowing Telegram's global CDN to cache inline results for 5 minutes.
+  5. **Clean Video Delivery:** All captions and inline buttons are removed (`caption=None, reply_markup=None`) for pure minimalist video output.
+- **Required Action to Eliminate Conflicts:**
+  - Revoke token in [@BotFather](https://t.me/BotFather) (`/revoke` for `@novidsbot`) to permanently kill the rogue polling process.
