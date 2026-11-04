@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.env
+.venv/
+env/
+venv/
+*.db
+*.sqlite3
+temp/
+*.mp4
+*.m4a
+*.webm
+.DS_Store
+.railway/
