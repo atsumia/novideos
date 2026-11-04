@@ -50,12 +50,6 @@ _INLINE_CACHE_MAX = 500
 _ACTIVE_VIDEO_INFO: Dict[str, Dict[str, Any]] = {}
 
 
-def get_video_inline_keyboard(canonical_url: str) -> InlineKeyboardMarkup:
-    buttons = []
-    if canonical_url and canonical_url.startswith("http"):
-        buttons.append(InlineKeyboardButton(text="🔗 В TikTok", url=canonical_url))
-    buttons.append(InlineKeyboardButton(text="⚡️ Скачать ещё", switch_inline_query=""))
-    return InlineKeyboardMarkup(inline_keyboard=[buttons])
 
 
 @dp.message(CommandStart())
@@ -173,21 +167,13 @@ async def inline_search_handler(inline_query: InlineQuery):
             author = cached_record.get('author') or "TikTok"
             canon_url = cached_record.get('canonical_url') or target_url
 
-            caption = (
-                f"🎬 <b>{title}</b>\n"
-                f"👤 <b>Автор:</b> {author}\n\n"
-                f"🤖 Скачано через @{bot_username}"
-            )
-            kb = get_video_inline_keyboard(canon_url)
-
             results.append(
                 InlineQueryResultCachedVideo(
                     id=f"cv_{cached_record['tiktok_id']}"[:50],
                     video_file_id=file_id,
-                    title=f"📹 Скачать: {title[:40]}",
-                    caption=caption,
-                    parse_mode="HTML",
-                    reply_markup=kb
+                    title=f"📹 {title[:40]}",
+                    description=f"@{author}",
+                    caption=None
                 )
             )
             elapsed = time.time() - t0
@@ -220,13 +206,6 @@ async def inline_search_handler(inline_query: InlineQuery):
                     cover_url=cover_url
                 )
 
-                caption = (
-                    f"🎬 <b>{title}</b>\n"
-                    f"👤 <b>Автор:</b> {author}\n\n"
-                    f"🤖 Скачано без водяного знака через @{bot_username}"
-                )
-                kb = get_video_inline_keyboard(canon_url)
-
                 # Всегда отдаем видеопоток через наш эндпоинт (гарантия MP4, даже для слайдшоу)
                 video_stream_url = f"{BASE_URL}/api/video/{video_id}.mp4"
 
@@ -236,11 +215,9 @@ async def inline_search_handler(inline_query: InlineQuery):
                         video_url=video_stream_url,
                         mime_type="video/mp4",
                         thumbnail_url=cover_url,
-                        title=f"📹 Скачать видео: {title[:40]}",
-                        description=f"👤 @{author}" + (f" | ⏱ {duration} сек" if duration > 0 else ""),
-                        caption=caption,
-                        parse_mode="HTML",
-                        reply_markup=kb
+                        title=f"📹 {title[:40]}",
+                        description=f"@{author}",
+                        caption=None
                     )
                 )
                 elapsed = time.time() - t0
@@ -315,19 +292,8 @@ async def handle_direct_message(message: types.Message):
                 cached = database.get_cached_video(vid)
 
         if cached and cached.get('file_id'):
-            canon_url = cached.get('canonical_url') or target_url
-            title = cached.get('title') or "TikTok видео"
-            author = cached.get('author') or "TikTok"
-            caption = (
-                f"🎬 <b>{title}</b>\n"
-                f"👤 <b>Автор:</b> {author}\n\n"
-                f"🤖 Скачано без водяного знака через @{bot_username}"
-            )
-            kb = get_video_inline_keyboard(canon_url)
             await message.answer_video(
-                video=cached['file_id'],
-                caption=caption,
-                reply_markup=kb
+                video=cached['file_id']
             )
             database.increment_downloads(user.id, "pm_download", cached['tiktok_id'])
             await status_msg.delete()
@@ -358,18 +324,10 @@ async def handle_direct_message(message: types.Message):
             return
 
         await status_msg.edit_text("🚀 <i>Отправляю видео...</i>")
-        caption = (
-            f"🎬 <b>{title}</b>\n"
-            f"👤 <b>Автор:</b> {author}\n\n"
-            f"🤖 Скачано без водяного знака через @{bot_username}"
-        )
-        kb = get_video_inline_keyboard(canon_url)
 
         sent_msg = await message.answer_video(
             video=FSInputFile(video_file),
-            caption=caption,
-            duration=duration if duration > 0 else None,
-            reply_markup=kb
+            duration=duration if duration > 0 else None
         )
 
         tg_file_id = sent_msg.video.file_id if sent_msg.video else None
