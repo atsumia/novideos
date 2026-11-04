@@ -2,7 +2,7 @@ import os
 import sys
 import time
 import asyncio
-from typing import Dict, Tuple, List, Any
+from typing import Dict, Tuple, List, Any, Optional
 
 from aiohttp import web
 from dotenv import load_dotenv
@@ -36,14 +36,18 @@ if not BOT_TOKEN:
     sys.exit(1)
 
 PORT = int(os.getenv("PORT", 8080))
+BASE_URL = os.getenv("BASE_URL", "https://novideos-production.up.railway.app").rstrip('/')
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
-# Кэш inline-запросов в оперативной памяти: {query_norm: (timestamp, [results])}
+# Кэш inline-запросов: {query_norm: (timestamp, [results])}
 _INLINE_QUERY_CACHE: Dict[str, Tuple[float, List[Any]]] = {}
 _INLINE_CACHE_TTL = 900  # 15 минут
 _INLINE_CACHE_MAX = 500
+
+# Кэш активных метаданных видео для эндпоинта стриминга: {video_id: info_dict}
+_ACTIVE_VIDEO_INFO: Dict[str, Dict[str, Any]] = {}
 
 
 def get_video_inline_keyboard(canonical_url: str) -> InlineKeyboardMarkup:
@@ -64,7 +68,7 @@ async def handle_start(message: types.Message):
 
     text = (
         f"🎬 <b>Привет, {user.first_name or 'друг'}!</b>\n\n"
-        f"Я бот <b>NoVideos</b> — мгновенно скачиваю видео из TikTok без водяного знака.\n\n"
+        f"Я бот <b>NoVideos</b> — скачиваю видео и слайдшоу из TikTok без водяного знака.\n\n"
         f"🚀 <b>Как мной пользоваться:</b>\n"
         f"1️⃣ <b>В этом чате:</b> просто отправь ссылку на TikTok (или поделись видео из приложения).\n"
         f"2️⃣ <b>В любом чате или группе (инлайн):</b> напиши в поле ввода:\n"
@@ -98,7 +102,7 @@ async def inline_search_handler(inline_query: InlineQuery):
     bot_info = await bot.get_me()
     bot_username = bot_info.username or "novidsbot"
 
-    # 1. Если поле ввода пустое — подсказываем как пользоваться
+    # 1. Если поле ввода пустое
     if not query:
         help_article = InlineQueryResultArticle(
             id="help_prompt",
@@ -109,7 +113,7 @@ async def inline_search_handler(inline_query: InlineQuery):
                 message_text=(
                     f"💡 <b>Как скачать видео через @{bot_username}:</b>\n\n"
                     f"Вставь ссылку на видео из TikTok в строке ввода после <code>@{bot_username} </code>.\n\n"
-                    f"Пример:\n<code>@{bot_username} https://vm.tiktok.com/ZM...</code>"
+                    f"Пример:\n<code>@{bot_username} https://vm.tiktok.com/...</code>"
                 ),
                 parse_mode="HTML"
             ),
@@ -130,8 +134,8 @@ async def inline_search_handler(inline_query: InlineQuery):
             thumbnail_url="https://images.unsplash.com/photo-1594322436404-5a0526db4d13?w=128&q=80",
             input_message_content=InputTextMessageContent(
                 message_text=(
-                    f"⚠️ Не удалось обнаружить корректную ссылку на TikTok в запросе: <i>{query[:40]}</i>\n\n"
-                    f"Пожалуйста, используй ссылку вида <code>https://vm.tiktok.com/...</code>"
+                    f"⚠️ Не удалось обнаружить ссылку на TikTok: <i>{query[:40]}</i>\n\n"
+                    f"Используй ссылку формата <code>https://vm.tiktok.com/...</code>"
                 ),
                 parse_mode="HTML"
             )
@@ -143,7 +147,7 @@ async def inline_search_handler(inline_query: InlineQuery):
     q_norm = target_url.lower()
     now = time.time()
 
-    # 3. Проверяем кэш запросов в оперативной памяти
+    # 3. Кэш запросов в оперативной памяти
     if q_norm in _INLINE_QUERY_CACHE:
         cached_time, cached_results = _INLINE_QUERY_CACHE[q_norm]
         if now - cached_time < _INLINE_CACHE_TTL:
@@ -155,7 +159,7 @@ async def inline_search_handler(inline_query: InlineQuery):
     results = []
 
     try:
-        # 4. Проверяем базу SQLite — возможно, видео уже скачивалось и есть Telegram file_id
+        # 4. Проверяем базу SQLite на готовый Telegram file_id
         cached_record = database.get_cached_video(target_url)
         if not cached_record:
             extracted_id = downloader.extract_video_id_from_url(target_url)
@@ -163,7 +167,7 @@ async def inline_search_handler(inline_query: InlineQuery):
                 cached_record = database.get_cached_video(extracted_id)
 
         if cached_record and cached_record.get('file_id'):
-            # МГНОВЕННЫЙ ОТВЕТ ЧЕРЕЗ TELEGRAM CDN (0 нагрузки на сервер, 0мс)
+            # Мгновенная отдача через Telegram CDN (0ms)
             file_id = cached_record['file_id']
             title = cached_record.get('title') or "TikTok видео"
             author = cached_record.get('author') or "TikTok"
@@ -172,7 +176,7 @@ async def inline_search_handler(inline_query: InlineQuery):
             caption = (
                 f"🎬 <b>{title}</b>\n"
                 f"👤 <b>Автор:</b> {author}\n\n"
-                f"🤖 Скачано без водяного знака через @{bot_username}"
+                f"🤖 Скачано через @{bot_username}"
             )
             kb = get_video_inline_keyboard(canon_url)
 
@@ -190,18 +194,22 @@ async def inline_search_handler(inline_query: InlineQuery):
             print(f"✅ [INLINE DB HIT] Cached file_id returned for {target_url} in {elapsed:.3f}s")
 
         else:
-            # 5. Если в базе нет file_id — получаем прямую ссылку без водяного знака
+            # 5. Получаем инфо о видео / слайдшоу
             info = await downloader.get_tiktok_info(target_url)
-            if info and info.get('download_url'):
+            if info:
                 video_id = info['video_id']
                 title = info['title'] or "TikTok видео"
                 author = info['author'] or "TikTok"
                 cover_url = info.get('cover_url') or "https://images.unsplash.com/photo-1611162617213-7d7a39e9b1d7?w=256&q=80"
                 duration = info.get('duration') or 0
-                download_url = info['download_url']
                 canon_url = info.get('canonical_url') or target_url
 
-                # Сохраняем метаданные в базу
+                _ACTIVE_VIDEO_INFO[video_id] = info
+
+                # Запускаем сборку / скачивание видео в фоне заранее, чтобы к клику пользователя файл уже был готов
+                asyncio.create_task(downloader.ensure_video_file(info))
+
+                # Сохраняем в базу метаданные
                 database.save_cached_video(
                     tiktok_id=video_id,
                     canonical_url=canon_url,
@@ -219,21 +227,24 @@ async def inline_search_handler(inline_query: InlineQuery):
                 )
                 kb = get_video_inline_keyboard(canon_url)
 
+                # Всегда отдаем видеопоток через наш эндпоинт (гарантия MP4, даже для слайдшоу)
+                video_stream_url = f"{BASE_URL}/api/video/{video_id}.mp4"
+
                 results.append(
                     InlineQueryResultVideo(
                         id=f"v_{video_id}"[:50],
-                        video_url=download_url,
+                        video_url=video_stream_url,
                         mime_type="video/mp4",
                         thumbnail_url=cover_url,
-                        title=f"📹 Скачать: {title[:40]}",
-                        description=f"👤 @{author} | ⏱ {duration} сек",
+                        title=f"📹 Скачать видео: {title[:40]}",
+                        description=f"👤 @{author}" + (f" | ⏱ {duration} сек" if duration > 0 else ""),
                         caption=caption,
                         parse_mode="HTML",
                         reply_markup=kb
                     )
                 )
                 elapsed = time.time() - t0
-                print(f"✅ [INLINE LIVE PARSED] Direct stream prepared for {target_url} in {elapsed:.2f}s")
+                print(f"✅ [INLINE LIVE STREAM] Video endpoint prepared for {target_url} in {elapsed:.2f}s")
 
             else:
                 results.append(
@@ -249,7 +260,6 @@ async def inline_search_handler(inline_query: InlineQuery):
                     )
                 )
 
-        # Сохраняем в кэш оперативной памяти
         if len(_INLINE_QUERY_CACHE) >= _INLINE_CACHE_MAX:
             oldest = next(iter(_INLINE_QUERY_CACHE))
             _INLINE_QUERY_CACHE.pop(oldest, None)
@@ -278,7 +288,6 @@ async def handle_direct_message(message: types.Message):
     database.register_user(user.id, user.username, user.first_name)
     text = message.text.strip()
 
-    # Поиск ссылок TikTok в тексте
     found_urls = downloader.find_tiktok_urls(text)
     if not found_urls:
         await message.answer(
@@ -297,9 +306,8 @@ async def handle_direct_message(message: types.Message):
     bot_info = await bot.get_me()
     bot_username = bot_info.username or "novidsbot"
 
-    temp_file = None
     try:
-        # Проверяем, есть ли уже cached file_id в базе
+        # Проверяем кэш базы данных
         cached = database.get_cached_video(target_url)
         if not cached:
             vid = downloader.extract_video_id_from_url(target_url)
@@ -307,7 +315,6 @@ async def handle_direct_message(message: types.Message):
                 cached = database.get_cached_video(vid)
 
         if cached and cached.get('file_id'):
-            # Быстрая отправка из Telegram CDN
             canon_url = cached.get('canonical_url') or target_url
             title = cached.get('title') or "TikTok видео"
             author = cached.get('author') or "TikTok"
@@ -326,25 +333,28 @@ async def handle_direct_message(message: types.Message):
             await status_msg.delete()
             return
 
-        # Если file_id нет — парсим инфо
-        await status_msg.edit_text("⏳ <i>Скачиваю видео с серверов TikTok...</i>")
+        # Парсим инфо
+        await status_msg.edit_text("⏳ <i>Обрабатываю видео...</i>")
         info = await downloader.get_tiktok_info(target_url)
-        if not info or not info.get('download_url'):
+        if not info:
             await status_msg.edit_text("❌ Не удалось загрузить видео. Возможно, оно приватное или удалено.")
             return
 
         video_id = info['video_id']
-        download_url = info['download_url']
         title = info['title'] or "TikTok видео"
         author = info['author'] or "TikTok"
         duration = info.get('duration') or 0
         cover_url = info.get('cover_url') or ""
         canon_url = info.get('canonical_url') or target_url
 
-        # Скачиваем во временный файл для отправки
-        temp_file = await downloader.download_video_file(download_url, video_id)
-        if not temp_file or not os.path.exists(temp_file):
-            await status_msg.edit_text("❌ Ошибка при сохранении видеофайла. Попробуйте другую ссылку.")
+        if info.get('is_slideshow'):
+            await status_msg.edit_text("🎬 <i>Сборка видео из слайдшоу...</i>")
+        else:
+            await status_msg.edit_text("⏳ <i>Скачиваю видеофайл...</i>")
+
+        video_file = await downloader.ensure_video_file(info)
+        if not video_file or not os.path.exists(video_file):
+            await status_msg.edit_text("❌ Ошибка при подготовке видеофайла.")
             return
 
         await status_msg.edit_text("🚀 <i>Отправляю видео...</i>")
@@ -356,13 +366,12 @@ async def handle_direct_message(message: types.Message):
         kb = get_video_inline_keyboard(canon_url)
 
         sent_msg = await message.answer_video(
-            video=FSInputFile(temp_file),
+            video=FSInputFile(video_file),
             caption=caption,
             duration=duration if duration > 0 else None,
             reply_markup=kb
         )
 
-        # Сохраняем полученный Telegram file_id в SQLite для мгновенной отдачи в будущем
         tg_file_id = sent_msg.video.file_id if sent_msg.video else None
         database.save_cached_video(
             tiktok_id=video_id,
@@ -379,11 +388,48 @@ async def handle_direct_message(message: types.Message):
     except Exception as e:
         print(f"❌ [PM HANDLER ERROR]: {e}")
         await status_msg.edit_text(f"⚠️ Произошла ошибка при обработке: {e}")
-    finally:
-        downloader.cleanup_file(temp_file)
 
 
-# ---------------- WEB SERVER FOR RAILWAY HEALTHCHECK ----------------
+# ---------------- WEB SERVER & VIDEO STREAMING ENDPOINT ----------------
+async def handle_api_video(request):
+    """Streams the generated/downloaded MP4 video file to Telegram servers."""
+    video_id = request.match_info.get("video_id", "").strip()
+    if video_id.endswith(".mp4"):
+        video_id = video_id[:-4]
+
+    headers = {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, OPTIONS, HEAD',
+        'Accept-Ranges': 'bytes'
+    }
+    if request.method == 'OPTIONS':
+        return web.Response(headers=headers)
+
+    target_mp4 = os.path.join("temp", f"video_{video_id}.mp4")
+
+    # Если файла еще нет — проверяем метаданные и генерируем/скачиваем
+    if not (os.path.exists(target_mp4) and os.path.getsize(target_mp4) > 1024):
+        info = _ACTIVE_VIDEO_INFO.get(video_id)
+        if not info:
+            row = database.get_cached_video(video_id)
+            if row and row.get('canonical_url'):
+                info = await downloader.get_tiktok_info(row['canonical_url'])
+
+        if info:
+            await downloader.ensure_video_file(info)
+
+    if os.path.exists(target_mp4) and os.path.getsize(target_mp4) > 1024:
+        return web.FileResponse(
+            target_mp4,
+            headers={
+                **headers,
+                'Content-Type': 'video/mp4'
+            }
+        )
+
+    return web.Response(text="Video not ready or not found", status=404, headers=headers)
+
+
 async def handle_health(request):
     return web.json_response({"status": "healthy", "service": "novideos"})
 
@@ -400,6 +446,7 @@ def create_web_app():
     app = web.Application()
     app.router.add_get("/", handle_root)
     app.router.add_get("/health", handle_health)
+    app.router.add_route("*", "/api/video/{video_id}", handle_api_video)
     return app
 
 
@@ -412,10 +459,27 @@ async def start_web_server():
     print(f"🌐 [WEB SERVER] Listening on port {PORT}")
 
 
+async def periodic_temp_cleanup():
+    """Cleans up files in temp/ older than 20 minutes to keep disk clean."""
+    while True:
+        try:
+            await asyncio.sleep(600)  # каждые 10 минут
+            now = time.time()
+            temp_dir = "temp"
+            if os.path.exists(temp_dir):
+                for f in os.listdir(temp_dir):
+                    p = os.path.join(temp_dir, f)
+                    if os.path.isfile(p):
+                        # старше 20 минут (1200 сек)
+                        if now - os.path.getmtime(p) > 1200:
+                            downloader.cleanup_file(p)
+        except Exception as e:
+            print(f"⚠️ [TEMP CLEANUP ERROR]: {e}")
+
+
 async def main():
     database.init_db()
 
-    # Устанавливаем команды бота
     commands = [
         BotCommand(command="start", description="Главное меню и инструкция"),
         BotCommand(command="stats", description="Статистика использования"),
@@ -425,10 +489,9 @@ async def main():
     bot_info = await bot.get_me()
     print(f"🤖 [BOT STARTED] @{bot_info.username} ({bot_info.first_name})")
 
-    # Запускаем встроенный веб-сервер для Railway
     await start_web_server()
+    asyncio.create_task(periodic_temp_cleanup())
 
-    # Запускаем polling
     await dp.start_polling(
         bot,
         allowed_updates=["message", "inline_query", "chosen_inline_result"]
