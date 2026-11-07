@@ -3,11 +3,13 @@ __pycache__/
 *$py.class
 *.so
 .env
+deployment.env
 .venv/
 env/
 venv/
 *.db
 *.sqlite3
+data/
 temp/
 *.mp4
 *.m4a

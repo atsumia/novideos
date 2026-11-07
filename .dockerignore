@@ -5,7 +5,10 @@ __pycache__
 .git
 .gitignore
 .env
+deployment.env
 .venv
 temp
 *.db
+data
+backups
 .railway

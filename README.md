@@ -1,49 +1,43 @@
 # NoVideos Bot (@novidsbot) 🎬
 
-Быстрый, легковесный и оптимизированный Telegram-бот для скачивания видео из TikTok без водяного знака с поддержкой **инлайн-режима**.
+Быстрый, легковесный и оптимизированный Telegram-бот для скачивания видео и слайдшоу из TikTok без водяного знака с поддержкой **инлайн-режима**.
 
 ---
 
-## 🚀 Особенности
+## 🚀 Продакшн на Instabox
 
-- ⚡️ **Инлайн-режим в любых чатах:** просто наберите `@novidsbot https://vm.tiktok.com/...` в любом диалоге или группе, нажмите на карточку — и видео сразу отправится в чат!
-- 💾 **Кэширование `file_id` (Telegram CDN):** ранее запрошенные видео отправляются мгновенно (0 мс задержки, 0 МБ трафика сервера).
-- 🧹 **Чистый MP4 без вотермарок:** получение оригинального видео без водяных знаков через быстрый парсер с резервным fallback на `yt-dlp`.
-- ☁️ **Railway Ready:** оптимизирован для хостинга на Railway: встроенный healthcheck-сервер, моментальная очистка временных файлов, потребление памяти < 70 МБ RAM.
+Развёрнут на Instabox, машина `vanya-agent` (`m_agqzxzix6jgflu7f2lvxmwjsc4`).
+
+- **Публичный домен / Webhook:** https://18081-agqzxzix6jgflu7f2lvxmwjsc4.instabox.tech
+- **Каталог на машине:** `/data/novideos/app`
+- **База данных SQLite:** `/data/novideos/data/database.db`
+- **Конфигурация:** `/data/novideos/app/deployment.env` (0600, исключён из Git и Docker-образа)
+- **Транспорт:** HTTPS Webhook `/telegram/webhook` с проверкой `WEBHOOK_SECRET`
+- **Keepalive:** GitHub Actions workflow каждые 5 минут + wake-контроллер с VPS
+
+### Управление на Instabox:
+```bash
+cd /data/novideos/app
+bash deploy.sh
+docker compose -p novideos logs --tail 100 -f
+docker compose -p novideos restart
+```
 
 ---
 
-## 🛠 Установка и локальный запуск
+## 🛠 Локальный запуск (Polling)
 
-1. **Клонируйте репозиторий:**
-   ```bash
-   git clone https://github.com/atsumia/novideos.git
-   cd novideos
-   ```
-
-2. **Установите зависимости:**
+1. Установите зависимости:
    ```bash
    pip install -r requirements.txt
    ```
-
-3. **Создайте `.env`:**
+2. Создайте `.env`:
    ```env
-   BOT_TOKEN=your_telegram_bot_token_here
+   BOT_TOKEN=your_token
    PORT=8080
-   PYTHONUNBUFFERED=1
+   BOT_TRANSPORT=polling
    ```
-
-4. **Запустите бота:**
+3. Запустите:
    ```bash
    python bot.py
    ```
-
----
-
-## ⚙️ Настройка в @BotFather
-
-Для работы инлайн-режима обязательно включите его у бота:
-1. Откройте [@BotFather](https://t.me/BotFather) в Telegram.
-2. Отправьте `/setinline`.
-3. Выберите `@novidsbot`.
-4. Введите плейсхолдер: `Вставь ссылку на TikTok...`

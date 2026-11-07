@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import signal
 import asyncio
 from typing import Dict, Tuple, List, Any, Optional
 
@@ -24,6 +25,7 @@ from aiogram.types import (
 )
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 import database
 import downloader
@@ -438,8 +440,64 @@ async def periodic_temp_cleanup():
             print(f"⚠️ [TEMP CLEANUP ERROR]: {e}")
 
 
+async def run_webhook_server():
+    secret = os.getenv("WEBHOOK_SECRET")
+    if not secret:
+        raise RuntimeError("WEBHOOK_SECRET is required for webhook mode")
+
+    app = create_web_app()
+    SimpleRequestHandler(
+        dispatcher=dp,
+        bot=bot,
+        secret_token=secret,
+        handle_in_background=True,
+    ).register(app, path="/telegram/webhook")
+    setup_application(app, dp, bot=bot)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, "0.0.0.0", PORT).start()
+    print(f"🌐 [WEB SERVER] Listening on port {PORT} (webhook mode)")
+
+    stopped = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, stopped.set)
+        except NotImplementedError:
+            pass
+
+    try:
+        commands = [
+            BotCommand(command="start", description="Главное меню и инструкция"),
+            BotCommand(command="stats", description="Статистика использования"),
+        ]
+        await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
+
+        webhook_url = f"{BASE_URL.rstrip('/')}/telegram/webhook"
+        await bot.set_webhook(
+            url=webhook_url,
+            secret_token=secret,
+            allowed_updates=["message", "inline_query", "chosen_inline_result"],
+            drop_pending_updates=False,
+        )
+        print(f"✅ Webhook configured: {webhook_url}")
+        await stopped.wait()
+    finally:
+        # Keep the webhook registered so incoming requests can wake an idle machine.
+        await runner.cleanup()
+
+
 async def main():
     database.init_db()
+    asyncio.create_task(periodic_temp_cleanup())
+
+    bot_info = await bot.get_me()
+    print(f"🤖 [BOT STARTED] @{bot_info.username} ({bot_info.first_name})")
+
+    if os.getenv("BOT_TRANSPORT", "polling") == "webhook":
+        await run_webhook_server()
+        return
 
     commands = [
         BotCommand(command="start", description="Главное меню и инструкция"),
@@ -447,11 +505,7 @@ async def main():
     ]
     await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
 
-    bot_info = await bot.get_me()
-    print(f"🤖 [BOT STARTED] @{bot_info.username} ({bot_info.first_name})")
-
     await start_web_server()
-    asyncio.create_task(periodic_temp_cleanup())
 
     try:
         await bot.delete_webhook(drop_pending_updates=False)

@@ -1,0 +1,24 @@
+services:
+  novideos:
+    build: .
+    restart: unless-stopped
+    init: true
+    env_file:
+      - deployment.env
+    environment:
+      DB_PATH: /app/data/database.db
+      DATABASE_PATH: /app/data/database.db
+      PORT: "8080"
+      BOT_TRANSPORT: webhook
+      PYTHONUNBUFFERED: "1"
+    ports:
+      - "18081:8080"
+    volumes:
+      - /data/novideos/data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    stop_grace_period: 45s

@@ -3,7 +3,7 @@ import sqlite3
 import threading
 from typing import Optional, Dict, Any
 
-DB_PATH = os.getenv("DATABASE_PATH", "data/database.db")
+DB_PATH = os.getenv("DB_PATH") or os.getenv("DATABASE_PATH", "data/database.db")
 _lock = threading.Lock()
 
 

@@ -1,0 +1,24 @@
+name: Instabox keepalive
+
+on:
+  schedule:
+    - cron: '4-59/5 * * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: instabox-keepalive-novideos
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check NoVideos health and wake an idle machine
+        run: |
+          curl --fail --show-error --silent \
+            --connect-timeout 20 --max-time 75 \
+            --retry 2 --retry-delay 10 \
+            https://18081-agqzxzix6jgflu7f2lvxmwjsc4.instabox.tech/health
